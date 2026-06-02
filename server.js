@@ -21,7 +21,7 @@ const OFFICE = {
   officeName: "Head Office",
   latitude: 23.79736290271165,
   longitude: 90.37310216902948,
-  radiusMeter: 100 
+  radiusMeter: 100
 };
 
 /*
@@ -33,13 +33,15 @@ let db;
 
 async function initDatabase() {
   try {
-    // database.db ফাইলে ডেটা সেভ হবে
+    // 🚀 Render-এর পারসিস্টেন্ট ডিস্ক পাথ প্রিপেয়ার করা
+    // যদি রেন্ডারে থাকে তবে '/data/database.db' ব্যবহার করবে, লোকালে থাকলে কারেন্ট ডিরেক্টরি
+    const dbPath = process.env.RENDER ? path.join("/data", "database.db") : path.join(__dirname, "database.db");
+
     db = await open({
-      filename: path.join(__dirname, "database.db"),
+      filename: dbPath,
       driver: sqlite3.Database
     });
 
-    // অ্যাটেনডেন্স টেবিল তৈরি (যদি না থাকে)
     await db.exec(`
       CREATE TABLE IF NOT EXISTS attendance (
         attendanceId INTEGER PRIMARY KEY,
@@ -60,8 +62,8 @@ async function initDatabase() {
         workingMinutes INTEGER
       )
     `);
-    
-    console.log("📁 SQLite Database & Tables Initialized Successfully.");
+
+    console.log(`📁 SQLite Database Initialized at: ${dbPath}`);
   } catch (error) {
     console.error("❌ Database Initialization Failed:", error);
   }
@@ -75,17 +77,17 @@ HELPER FUNCTIONS (Timezone & Distance)
 
 function getTodayInBangladesh() {
   const options = { timeZone: 'Asia/Dhaka', year: 'numeric', month: '2-digit', day: '2-digit' };
-  const formatter = new Intl.DateTimeFormat('en-CA', options); 
+  const formatter = new Intl.DateTimeFormat('en-CA', options);
   return formatter.format(new Date());
 }
 
 function getLocalISOTime() {
-  const tzoffset = (new Date()).getTimezoneOffset() * 60000; 
+  const tzoffset = (new Date()).getTimezoneOffset() * 60000;
   return (new Date(Date.now() - tzoffset)).toISOString();
 }
 
 function calculateDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371000; 
+  const R = 6371000;
 
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
   const dLon = ((lon2 - lon1) * Math.PI) / 180;
@@ -93,9 +95,9 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
   const a =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
     Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
+    Math.cos((lat2 * Math.PI) / 180) *
+    Math.sin(dLon / 2) *
+    Math.sin(dLon / 2);
 
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
@@ -142,7 +144,7 @@ CHECK-IN API
 app.post("/api/attendance/checkin", async (req, res) => {
   try {
     const { latitude, longitude, accuracy, deviceId, employeeId } = req.body;
-    const empId = Number(employeeId) || 101; 
+    const empId = Number(employeeId) || 101;
 
     const lat = parseFloat(latitude);
     const lng = parseFloat(longitude);
@@ -374,7 +376,7 @@ app.get("/api/attendance/all", async (req, res) => {
   try {
     // 🔍 SQLite Query: লেটেস্ট রেকর্ড আগে দেখানোর জন্য ORDER BY ব্যবহার করা হয়েছে
     const sortedRecords = await db.all("SELECT * FROM attendance ORDER BY attendanceId DESC");
-    
+
     res.json({
       status: "SUCCESS",
       total: sortedRecords.length,
