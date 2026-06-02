@@ -1,5 +1,8 @@
 const express = require("express");
 const cors = require("cors");
+const { open } = require("sqlite");
+const sqlite3 = require("sqlite3");
+const path = require("path");
 
 const app = express();
 
@@ -18,15 +21,51 @@ const OFFICE = {
   officeName: "Head Office",
   latitude: 23.79736290271165,
   longitude: 90.37310216902948,
-  radiusMeter: 200 // ২০০ মিটারের ভেতর থাকতে হবে
+  radiusMeter: 100 
 };
 
 /*
 ====================================================
-IN-MEMORY DATABASE
+SQLITE DATABASE INITIALIZATION
 ====================================================
 */
-const attendanceRecords = [];
+let db;
+
+async function initDatabase() {
+  try {
+    // database.db ফাইলে ডেটা সেভ হবে
+    db = await open({
+      filename: path.join(__dirname, "database.db"),
+      driver: sqlite3.Database
+    });
+
+    // অ্যাটেনডেন্স টেবিল তৈরি (যদি না থাকে)
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS attendance (
+        attendanceId INTEGER PRIMARY KEY,
+        employeeId INTEGER,
+        employeeCode TEXT,
+        employeeName TEXT,
+        date TEXT,
+        checkInTime TEXT,
+        checkOutTime TEXT,
+        checkInLat REAL,
+        checkInLng REAL,
+        checkOutLat REAL,
+        checkOutLng REAL,
+        distance REAL,
+        accuracy REAL,
+        deviceId TEXT,
+        status TEXT,
+        workingMinutes INTEGER
+      )
+    `);
+    
+    console.log("📁 SQLite Database & Tables Initialized Successfully.");
+  } catch (error) {
+    console.error("❌ Database Initialization Failed:", error);
+  }
+}
 
 /*
 ====================================================
@@ -34,22 +73,19 @@ HELPER FUNCTIONS (Timezone & Distance)
 ====================================================
 */
 
-// 💡 Senior Dev Note: Local Timezone (Asia/Dhaka) অনুযায়ী নিখুঁত Date পাওয়ার উপায়
 function getTodayInBangladesh() {
   const options = { timeZone: 'Asia/Dhaka', year: 'numeric', month: '2-digit', day: '2-digit' };
-  const formatter = new Intl.DateTimeFormat('en-CA', options); // Outputs YYYY-MM-DD
+  const formatter = new Intl.DateTimeFormat('en-CA', options); 
   return formatter.format(new Date());
 }
 
 function getLocalISOTime() {
-  // বাংলাদেশের লোকাল টাইম ISO ফরম্যাটে জেনারেট করার জন্য
-  const tzoffset = (new Date()).getTimezoneOffset() * 60000; // offset in milliseconds
+  const tzoffset = (new Date()).getTimezoneOffset() * 60000; 
   return (new Date(Date.now() - tzoffset)).toISOString();
 }
 
-// Haversine Formula: দুটি GPS স্থানাঙ্কের দূরত্ব মিটারে বের করার জন্য
 function calculateDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371000; // Earth's radius in meters
+  const R = 6371000; 
 
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
   const dLon = ((lon2 - lon1) * Math.PI) / 180;
@@ -84,31 +120,28 @@ function validateGps(latitude, longitude) {
 ROOT API
 ====================================================
 */
-app.get("/", (req, res) => {
-  res.json({
-    status: "RUNNING",
-    office: OFFICE,
-    totalAttendanceRecords: attendanceRecords.length,
-    serverTime: getLocalISOTime()
-  });
+app.get("/", async (req, res) => {
+  try {
+    const countResult = await db.get("SELECT COUNT(*) as total FROM attendance");
+    res.json({
+      status: "RUNNING",
+      office: OFFICE,
+      totalAttendanceRecords: countResult.total,
+      serverTime: getLocalISOTime()
+    });
+  } catch (e) {
+    res.status(500).json({ status: "ERROR", message: e.message });
+  }
 });
 
 /*
 ====================================================
-CHECK-IN API (Updated with dynamic employee handling)
+CHECK-IN API
 ====================================================
 */
-app.post("/api/attendance/checkin", (req, res) => {
+app.post("/api/attendance/checkin", async (req, res) => {
   try {
-    const {
-      latitude,
-      longitude,
-      accuracy,
-      deviceId,
-      employeeId // 🚀 ফ্লাটার থেকে ডাইনামিক আইডি পাস করার স্কোপ রাখা হলো
-    } = req.body;
-
-    // যদি ফ্লাটার থেকে আইডি না আসে তবে ডিফল্ট ১০১ (টেস্টিং সেফটি)
+    const { latitude, longitude, accuracy, deviceId, employeeId } = req.body;
     const empId = Number(employeeId) || 101; 
 
     const lat = parseFloat(latitude);
@@ -121,7 +154,6 @@ app.post("/api/attendance/checkin", (req, res) => {
       });
     }
 
-    // জিপিএস রেডিয়াস ভ্যালিডেশন
     const gps = validateGps(lat, lng);
     if (!gps.allowed) {
       return res.status(400).json({
@@ -133,9 +165,10 @@ app.post("/api/attendance/checkin", (req, res) => {
 
     const today = getTodayInBangladesh();
 
-    // অলরেডি চেক-ইন করা আছে কিনা চেক
-    const existing = attendanceRecords.find(
-      a => a.employeeId === empId && a.date === today
+    // 🔍 SQLite Query: আজকের দিনে অলরেডি চেক-ইন করা আছে কিনা চেক
+    const existing = await db.get(
+      "SELECT * FROM attendance WHERE employeeId = ? AND date = ?",
+      [empId, today]
     );
 
     if (existing) {
@@ -164,7 +197,20 @@ app.post("/api/attendance/checkin", (req, res) => {
       workingMinutes: 0
     };
 
-    attendanceRecords.push(attendance);
+    // 💾 SQLite INSERT
+    await db.run(
+      `INSERT INTO attendance (
+        attendanceId, employeeId, employeeCode, employeeName, date, 
+        checkInTime, checkOutTime, checkInLat, checkInLng, 
+        checkOutLat, checkOutLng, distance, accuracy, deviceId, status, workingMinutes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )`,
+      [
+        attendance.attendanceId, attendance.employeeId, attendance.employeeCode, attendance.employeeName, attendance.date,
+        attendance.checkInTime, attendance.checkOutTime, attendance.checkInLat, attendance.checkInLng,
+        attendance.checkOutLat, attendance.checkOutLng, attendance.distance, attendance.accuracy, attendance.deviceId,
+        attendance.status, attendance.workingMinutes
+      ]
+    );
 
     return res.json({
       status: "SUCCESS",
@@ -172,19 +218,16 @@ app.post("/api/attendance/checkin", (req, res) => {
       attendance
     });
   } catch (e) {
-    return res.status(500).json({
-      status: "ERROR",
-      message: e.message
-    });
+    return res.status(500).json({ status: "ERROR", message: e.message });
   }
 });
 
 /*
 ====================================================
-CHECK-OUT API (Fixed bugs & dynamic matching)
+CHECK-OUT API
 ====================================================
 */
-app.post("/api/attendance/checkout", (req, res) => {
+app.post("/api/attendance/checkout", async (req, res) => {
   try {
     const { latitude, longitude, employeeId } = req.body;
     const empId = Number(employeeId) || 101;
@@ -199,7 +242,6 @@ app.post("/api/attendance/checkout", (req, res) => {
       });
     }
 
-    // 🚀 BUG FIX: পার্স করা lat, lng পাঠানো হচ্ছে ভ্যালিডেশনে
     const gps = validateGps(lat, lng);
     if (!gps.allowed) {
       return res.status(400).json({
@@ -210,9 +252,10 @@ app.post("/api/attendance/checkout", (req, res) => {
 
     const today = getTodayInBangladesh();
 
-    // আজকের এটেনডেন্স রেকর্ড খোঁজা
-    const attendance = attendanceRecords.find(
-      a => a.employeeId === empId && a.date === today
+    // 🔍 SQLite Query: আজকের অ্যাটেনডেন্স রেকর্ড খোঁজা
+    const attendance = await db.get(
+      "SELECT * FROM attendance WHERE employeeId = ? AND date = ?",
+      [empId, today]
     );
 
     if (!attendance) {
@@ -229,27 +272,35 @@ app.post("/api/attendance/checkout", (req, res) => {
       });
     }
 
-    // ডাটা আপডেট
-    attendance.checkOutTime = getLocalISOTime();
-    attendance.checkOutLat = lat;
-    attendance.checkOutLng = lng;
-
+    const checkOutTime = getLocalISOTime();
     const checkIn = new Date(attendance.checkInTime);
-    const checkOut = new Date(attendance.checkOutTime);
+    const checkOut = new Date(checkOutTime);
+    const workingMinutes = Math.round((checkOut - checkIn) / 60000);
 
-    // মিনিট ক্যালকুলেশন
-    attendance.workingMinutes = Math.round((checkOut - checkIn) / 60000);
+    // 💾 SQLite UPDATE
+    await db.run(
+      `UPDATE attendance 
+       SET checkOutTime = ?, checkOutLat = ?, checkOutLng = ?, workingMinutes = ?
+       WHERE employeeId = ? AND date = ?`,
+      [checkOutTime, lat, lng, workingMinutes, empId, today]
+    );
+
+    // আপডেটেড ডেটা ফ্রন্টএন্ডে রেসপন্স পাঠানোর জন্য অবজেক্ট রি-বিল্ড
+    const updatedAttendance = {
+      ...attendance,
+      checkOutTime,
+      checkOutLat: lat,
+      checkOutLng: lng,
+      workingMinutes
+    };
 
     return res.json({
       status: "SUCCESS",
       message: "Check-Out Successful",
-      attendance
+      attendance: updatedAttendance
     });
   } catch (e) {
-    return res.status(500).json({
-      status: "ERROR",
-      message: e.message
-    });
+    return res.status(500).json({ status: "ERROR", message: e.message });
   }
 });
 
@@ -258,62 +309,80 @@ app.post("/api/attendance/checkout", (req, res) => {
 MONTHLY CALENDAR
 ====================================================
 */
-app.get("/api/attendance/calendar/:employeeId/:year/:month", (req, res) => {
-  const employeeId = Number(req.params.employeeId);
-  const year = req.params.year;
-  const month = req.params.month;
+app.get("/api/attendance/calendar/:employeeId/:year/:month", async (req, res) => {
+  try {
+    const employeeId = Number(req.params.employeeId);
+    const year = req.params.year;
+    const month = req.params.month;
+    const datePrefix = `${year}-${month}%`; // LIKE কোয়েরির জন্য ওয়াইল্ডকার্ড
 
-  const records = attendanceRecords.filter(
-    a => a.employeeId === employeeId && a.date.startsWith(`${year}-${month}`)
-  );
+    // 🔍 SQLite Query: নির্দিষ্ট মাস এবং বছরের রেকর্ড ফিল্টার
+    const records = await db.all(
+      "SELECT * FROM attendance WHERE employeeId = ? AND date LIKE ?",
+      [employeeId, datePrefix]
+    );
 
-  res.json({
-    status: "SUCCESS",
-    employeeId,
-    year,
-    month,
-    records
-  });
+    res.json({
+      status: "SUCCESS",
+      employeeId,
+      year,
+      month,
+      records
+    });
+  } catch (e) {
+    res.status(500).json({ status: "ERROR", message: e.message });
+  }
 });
 
 /*
 ====================================================
-MONTHLY SUMMARY (Optimized for Flutter UI Blocks)
+MONTHLY SUMMARY
 ====================================================
 */
-app.get("/api/attendance/summary/:employeeId", (req, res) => {
-  const employeeId = Number(req.params.employeeId);
+app.get("/api/attendance/summary/:employeeId", async (req, res) => {
+  try {
+    const employeeId = Number(req.params.employeeId);
 
-  const records = attendanceRecords.filter(
-    a => a.employeeId === employeeId
-  );
+    // 🔍 SQLite Query: টোটাল দিন এবং ওয়ার্কিং মিনিটস এগ্রিগেশন
+    const summaryData = await db.get(
+      `SELECT COUNT(*) as totalPresent, SUM(COALESCE(workingMinutes, 0)) as totalMinutes 
+       FROM attendance WHERE employeeId = ?`,
+      [employeeId]
+    );
 
-  const totalPresent = records.length;
-  const totalMinutes = records.reduce((sum, item) => sum + (item.workingMinutes || 0), 0);
+    const totalPresent = summaryData.totalPresent || 0;
+    const totalMinutes = summaryData.totalMinutes || 0;
 
-  res.json({
-    status: "SUCCESS",
-    employeeId,
-    totalPresent,
-    totalWorkingMinutes: totalMinutes,
-    totalWorkingHours: Number((totalMinutes / 60).toFixed(2))
-  });
+    res.json({
+      status: "SUCCESS",
+      employeeId,
+      totalPresent,
+      totalWorkingMinutes: totalMinutes,
+      totalWorkingHours: Number((totalMinutes / 60).toFixed(2))
+    });
+  } catch (e) {
+    res.status(500).json({ status: "ERROR", message: e.message });
+  }
 });
 
 /*
 ====================================================
-ALL ATTENDANCE (For Flutter List View & Refresh Indicators)
+ALL ATTENDANCE
 ====================================================
 */
-app.get("/api/attendance/all", (req, res) => {
-  // লেটেস্ট এটেনডেন্সগুলো লিস্টের প্রথমে রাখার জন্য সর্ট করা হয়েছে
-  const sortedRecords = [...attendanceRecords].sort((a, b) => b.attendanceId - a.attendanceId);
-  
-  res.json({
-    status: "SUCCESS",
-    total: sortedRecords.length,
-    records: sortedRecords
-  });
+app.get("/api/attendance/all", async (req, res) => {
+  try {
+    // 🔍 SQLite Query: লেটেস্ট রেকর্ড আগে দেখানোর জন্য ORDER BY ব্যবহার করা হয়েছে
+    const sortedRecords = await db.all("SELECT * FROM attendance ORDER BY attendanceId DESC");
+    
+    res.json({
+      status: "SUCCESS",
+      total: sortedRecords.length,
+      records: sortedRecords
+    });
+  } catch (e) {
+    res.status(500).json({ status: "ERROR", message: e.message });
+  }
 });
 
 /*
@@ -321,11 +390,14 @@ app.get("/api/attendance/all", (req, res) => {
 SERVER START
 ====================================================
 */
-app.listen(PORT, "0.0.0.0", () => {
-  console.log("======================================");
-  console.log(`🚀 HRM SERVER RUNNING ON PORT : ${PORT}`);
-  console.log(`🏢 OFFICE : ${OFFICE.officeName}`);
-  console.log(`📍 TARGET GPS : ${OFFICE.latitude}, ${OFFICE.longitude}`);
-  console.log(`🎯 SAFE RADIUS : ${OFFICE.radiusMeter} meters`);
-  console.log("======================================");
+// ডাটাবেজ রেডি হওয়ার পর এক্সপ্রেস সার্ভার লিসেন করবে
+initDatabase().then(() => {
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log("======================================");
+    console.log(`🚀 HRM SERVER RUNNING ON PORT : ${PORT}`);
+    console.log(`🏢 OFFICE : ${OFFICE.officeName}`);
+    console.log(`📍 TARGET GPS : ${OFFICE.latitude}, ${OFFICE.longitude}`);
+    console.log(`🎯 SAFE RADIUS : ${OFFICE.radiusMeter} meters`);
+    console.log("======================================");
+  });
 });
