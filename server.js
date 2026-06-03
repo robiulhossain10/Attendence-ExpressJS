@@ -29,11 +29,17 @@ POSTGRESQL DATABASE CONNECTION
 */
 // Render-এ ডিপ্লয় করলে তারা একটি 'DATABASE_URL' এনভায়রনমেন্ট ভ্যারিয়েবল দেয়।
 // লোকালে টেস্ট করার জন্য নিচে তোমার লোকাল পোস্টগ্রেস কানেকশন স্ট্রিং দিতে পারো।
-const connectionString = process.env.DATABASE_URL || "postgresql://postgres:password@localhost:5432/hrm_db";
+/*
+====================================================
+POSTGRESQL DATABASE CONNECTION
+====================================================
+*/
+const connectionString = process.env.DATABASE_URL || "postgresql://postgres:root@185.250.36.126:5432/hrms";
 
 const pool = new Pool({
   connectionString: connectionString,
-  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false // Render-এর জন্য SSL অন করা আবশ্যক
+  // Render Cloud DB-র জন্য SSL হ্যান্ডশেক অবলিগেটরি
+  ssl: { rejectUnauthorized: false } 
 });
 
 async function initDatabase() {
