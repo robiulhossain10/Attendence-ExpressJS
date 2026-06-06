@@ -17,9 +17,9 @@ OFFICE CONFIG (Geofencing)
 const OFFICE = {
   officeId: 1,
   officeName: "Head Office",
-  latitude: 23.79736290271165,
-  longitude: 90.37310216902948,
-  radiusMeter: 100
+  latitude: 23.7973427,
+  longitude: 90.3733108,
+  radiusMeter: 100 
 };
 
 /*
